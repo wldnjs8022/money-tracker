@@ -50,7 +50,7 @@
 - 카테고리별 지출 비율 확인
 - 잔액 추이 확인
 
-![대시보드](assets/screenshots/01_dashboard.JPG)
+![대시보드](images\1.JPG)
 
 <br />
 
@@ -63,7 +63,7 @@
 - 내역 수정 및 삭제
 - 총 수입, 총 지출, 잔액 자동 계산
 
-![가계부](assets/screenshots/02_ledger.JPG)
+![가계부](images\2.JPG)
 
 <br />
 
@@ -76,7 +76,7 @@
 - 태그별 지출 분석
 - 잔액 추이 시각화
 
-![통계](assets/screenshots/03_statistics.JPG)
+![통계](images\3.JPG)
 
 <br />
 
@@ -89,7 +89,7 @@
 - 금융 자산, 투자 자산, 기타 자산 구분 표시
 - 자산별 평가손익 및 수익률 관리
 
-![자산관리](assets/screenshots/04_assets.JPG)
+![자산관리](images\4.JPG)
 
 <br />
 
@@ -101,7 +101,7 @@
 - 저장 전 내역 미리보기 제공
 - 저장 시 Spring Boot API를 통해 MySQL에 반영
 
-![내역 등록](assets/screenshots/05_transaction_form.JPG)
+![내역 등록](images\5.JPG)
 
 <br />
 
@@ -112,7 +112,7 @@
 - 로그인 모드 상태 표시
 - 로그인 사용자 데이터는 계정 기준으로 저장
 
-![로그인 상태](assets/screenshots/06_login_state.JPG)
+![로그인 상태](images\6.JPG)
 
 <br />
 
@@ -124,7 +124,7 @@
 - 로그인 후 회원 계정 데이터만 불러오기
 - 가계부 내역, 자산 정보, 마이페이지 정보 병합 준비 상태 표시
 
-![로그인 및 회원가입](assets/screenshots/07_auth_migration.JPG)
+![로그인 및 회원가입](images\7.JPG)
 
 <br />
 
@@ -136,7 +136,7 @@
 - 데이터 보관 방식 확인
 - 로그아웃 기능 제공
 
-![회원 마이페이지](assets/screenshots/08_mypage_member.JPG)
+![회원 마이페이지](images\8.JPG)
 
 <br />
 
@@ -147,7 +147,7 @@
 - 가계부 요약 및 자산 요약 확인
 - 로그인하여 데이터 영구 보존 기능 제공
 
-![게스트 마이페이지](assets/screenshots/09_mypage_guest.JPG)
+![게스트 마이페이지](images\9.JPG)
 
 <br />
 
@@ -247,13 +247,6 @@ guestId 생성 → localStorage 저장 → API 요청 시 guestId 전달 → MyS
 cd frontend
 npm install
 npm run dev
-```
-
-### Backend 실행
-
-```bash
-cd backend
-./gradlew bootRun
 ```
 
 <br />

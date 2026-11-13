@@ -1,0 +1,16 @@
+services:
+  db:
+    image: postgres:18
+    container_name: money-tracker-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: money
+      POSTGRES_PASSWORD: money
+      POSTGRES_DB: money
+    ports:
+      - "5433:5432"
+    volumes:
+      - money-tracker-db:/var/lib/postgresql
+
+volumes:
+  money-tracker-db:

@@ -1,56 +1,43 @@
-# Node / React / Vite
-frontend/node_modules/
-frontend/dist/
-frontend/.vite/
-frontend/*.log
-frontend/npm-debug.log*
-frontend/yarn-debug.log*
-frontend/yarn-error.log*
-frontend/pnpm-debug.log*
-frontend/tsconfig.tsbuildinfo
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
-# Java / Spring Boot / Maven
-backend/target/
-backend/*.log
-backend/.mvn/wrapper/maven-wrapper.jar
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
 
-# Local environment files
-.env
-.env.*
-frontend/.env
-frontend/.env.*
-backend/.env
-backend/.env.*
-application.yml
-application-local.yml
-application-secret.yml
-backend/src/main/resources/application-local.yml
-backend/src/main/resources/application-secret.yml
+# testing
+/coverage
 
-# IDE - IntelliJ IDEA
-.idea/
-*.iml
-*.iws
-*.ipr
-out/
+# next.js
+/.next/
+/out/
 
-# IDE - VS Code
-.vscode/
+# production
+/build
 
-# OS generated files
+# misc
 .DS_Store
-Thumbs.db
-desktop.ini
+*.pem
 
-# Logs
-logs/
-*.log
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
 
-# Build / cache
-.cache/
-tmp/
-temp/
+# env files (can opt-in for committing if needed)
+.env*
 
-# Generated documents
-*.bak
-*.tmp
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+!.env.example

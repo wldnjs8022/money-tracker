@@ -15,7 +15,7 @@ function Tabs({
       data-slot="tabs"
       data-orientation={orientation}
       className={cn(
-        "group/tabs flex gap-2 data-horizontal:flex-col",
+        "group/tabs flex gap-3 data-horizontal:flex-col",
         className
       )}
       {...props}
@@ -23,13 +23,35 @@ function Tabs({
   )
 }
 
+/**
+ * Pill tab look (the 기록 view tabs: 확인할 것 / 전체 / 이체): white hairline pills, the active one ink.
+ * Exported for tabs that are links or buttons rather than Radix tabs, e.g.
+ * <Link className={tabPillVariants({ active })} aria-current={active ? "page" : undefined}>.
+ */
+const tabPillVariants = cva(
+  "inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-[8px] border px-3 text-sm whitespace-nowrap transition-colors duration-150 outline-none focus-ring disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+  {
+    variants: {
+      active: {
+        true: "border-transparent bg-primary font-bold text-primary-foreground",
+        false: "border-line bg-card font-semibold text-ink-2 hover:bg-muted hover:text-foreground",
+      },
+    },
+    defaultVariants: {
+      active: false,
+    },
+  }
+)
+
+// default = pills; segment = muted track with a raised white active tab; line = underline.
 const tabsListVariants = cva(
-  "group/tabs-list inline-flex w-fit items-center justify-center rounded-lg p-[3px] text-muted-foreground group-data-horizontal/tabs:h-8 group-data-vertical/tabs:h-fit group-data-vertical/tabs:flex-col data-[variant=line]:rounded-none",
+  "group/tabs-list inline-flex w-fit items-center text-ink-2 group-data-vertical/tabs:h-fit group-data-vertical/tabs:flex-col group-data-vertical/tabs:items-stretch",
   {
     variants: {
       variant: {
-        default: "bg-muted",
-        line: "gap-1 bg-transparent",
+        default: "gap-1.5",
+        segment: "h-10 gap-1 rounded-[10px] bg-muted p-1",
+        line: "gap-4 border-b border-line-soft",
       },
     },
     defaultVariants: {
@@ -62,10 +84,15 @@ function TabsTrigger({
     <TabsPrimitive.Trigger
       data-slot="tabs-trigger"
       className={cn(
-        "relative inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-md border border-transparent px-1.5 py-0.5 text-sm font-medium whitespace-nowrap text-foreground/60 transition-all group-data-vertical/tabs:w-full group-data-vertical/tabs:justify-start hover:text-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-50 has-data-[icon=inline-end]:pr-1 has-data-[icon=inline-start]:pl-1 dark:text-muted-foreground dark:hover:text-foreground group-data-[variant=default]/tabs-list:data-active:shadow-sm group-data-[variant=line]/tabs-list:data-active:shadow-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
-        "group-data-[variant=line]/tabs-list:bg-transparent group-data-[variant=line]/tabs-list:data-active:bg-transparent dark:group-data-[variant=line]/tabs-list:data-active:border-transparent dark:group-data-[variant=line]/tabs-list:data-active:bg-transparent",
-        "data-active:bg-background data-active:text-foreground dark:data-active:border-input dark:data-active:bg-input/30 dark:data-active:text-foreground",
-        "after:absolute after:bg-foreground after:opacity-0 after:transition-opacity group-data-horizontal/tabs:after:inset-x-0 group-data-horizontal/tabs:after:bottom-[-5px] group-data-horizontal/tabs:after:h-0.5 group-data-vertical/tabs:after:inset-y-0 group-data-vertical/tabs:after:-right-1 group-data-vertical/tabs:after:w-0.5 group-data-[variant=line]/tabs-list:data-active:after:opacity-100",
+        "relative inline-flex shrink-0 items-center justify-center gap-1.5 text-sm font-semibold whitespace-nowrap transition-colors duration-150 outline-none focus-ring disabled:pointer-events-none disabled:opacity-50 group-data-vertical/tabs:justify-start [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+        // Hover only tints inactive tabs. shadcn's data-active variant is wrapped in :where(), so a
+        // plain hover rule would outrank the active styles and repaint the tab just clicked.
+        // default: pills
+        "group-data-[variant=default]/tabs-list:h-9 group-data-[variant=default]/tabs-list:rounded-[8px] group-data-[variant=default]/tabs-list:border group-data-[variant=default]/tabs-list:border-line group-data-[variant=default]/tabs-list:bg-card group-data-[variant=default]/tabs-list:px-3 group-data-[variant=default]/tabs-list:data-[state=inactive]:hover:bg-muted group-data-[variant=default]/tabs-list:data-[state=inactive]:hover:text-foreground group-data-[variant=default]/tabs-list:data-active:border-transparent group-data-[variant=default]/tabs-list:data-active:bg-primary group-data-[variant=default]/tabs-list:data-active:font-bold group-data-[variant=default]/tabs-list:data-active:text-primary-foreground",
+        // segment: raised white tab on a muted track
+        "group-data-[variant=segment]/tabs-list:h-full group-data-[variant=segment]/tabs-list:flex-1 group-data-[variant=segment]/tabs-list:rounded-[7px] group-data-[variant=segment]/tabs-list:px-3 group-data-[variant=segment]/tabs-list:data-[state=inactive]:hover:text-foreground group-data-[variant=segment]/tabs-list:data-active:bg-card group-data-[variant=segment]/tabs-list:data-active:font-bold group-data-[variant=segment]/tabs-list:data-active:text-foreground group-data-[variant=segment]/tabs-list:data-active:shadow-card",
+        // line: underline under the active tab
+        "group-data-[variant=line]/tabs-list:h-10 group-data-[variant=line]/tabs-list:data-[state=inactive]:hover:text-foreground group-data-[variant=line]/tabs-list:data-active:text-foreground after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:rounded-full after:bg-foreground after:opacity-0 group-data-[variant=line]/tabs-list:data-active:after:opacity-100",
         className
       )}
       {...props}
@@ -86,4 +113,4 @@ function TabsContent({
   )
 }
 
-export { Tabs, TabsList, TabsTrigger, TabsContent, tabsListVariants }
+export { Tabs, TabsList, TabsTrigger, TabsContent, tabsListVariants, tabPillVariants }

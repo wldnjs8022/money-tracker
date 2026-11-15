@@ -1,90 +1,106 @@
+import type { Metadata } from "next";
 import { connection } from "next/server";
 import { Suspense } from "react";
-import { Kbd, PageHeader } from "@/components/common";
-import { MonthNav } from "@/components/month-nav";
-import { FiltersBar } from "@/components/transactions/filters-bar";
-import { NewTransactionButton } from "@/components/transactions/new-transaction-button";
-import { TransactionsTable } from "@/components/transactions/transactions-table";
-import { Skeleton } from "@/components/ui/skeleton";
-import { currentMonthKST, isValidMonth } from "@/lib/dates";
-import { formatKRW, formatSignedKRW } from "@/lib/money";
-import { getEntryContext, listTransactions } from "@/server/queries";
+import { parseInboxView } from "@/components/app/nav";
+import { Inbox, type WalletBalance } from "@/components/inbox/inbox";
+import { InboxSkeleton } from "@/components/inbox/inbox-skeleton";
+import type { InboxQuery, MonthStats } from "@/components/inbox/model";
+import { isValidMonth, monthOf, todayKST } from "@/lib/dates";
+import {
+  getCategoryUsual,
+  getEntryContext,
+  getReviewCount,
+  getWallets,
+  listTransactions,
+  type TransactionRow,
+} from "@/server/queries";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
 
+export const metadata: Metadata = { title: "기록" };
+
+/** 기록함: list · detail · side panes. The URL holds the view, month, filters and the selected id. */
 export default function TransactionsPage({ searchParams }: PageProps<"/transactions">) {
   return (
-    <Suspense fallback={<TransactionsSkeleton />}>
-      <TransactionsContent searchParams={searchParams} />
+    <Suspense fallback={<InboxSkeleton />}>
+      <TransactionsInbox searchParams={searchParams} />
     </Suspense>
   );
 }
 
-async function TransactionsContent({ searchParams }: { searchParams: PageProps<"/transactions">["searchParams"] }) {
-  await connection(); // "this month" depends on the clock, so render at request time
+async function TransactionsInbox({ searchParams }: { searchParams: PageProps<"/transactions">["searchParams"] }) {
+  await connection(); // "this month" and "today" depend on the clock
   const sp = await searchParams;
-  const monthParam = one(sp.month);
-  const month = isValidMonth(monthParam) ? monthParam : currentMonthKST();
-  const typeParam = one(sp.type);
-  const type = typeParam === "income" || typeParam === "expense" || typeParam === "transfer" ? typeParam : undefined;
-  const wallet = UUID.test(one(sp.wallet) ?? "") ? one(sp.wallet) : undefined;
-  const categoryParam = one(sp.category);
-  const category = categoryParam === "none" || UUID.test(categoryParam ?? "") ? categoryParam : undefined;
-  const q = one(sp.q)?.slice(0, 100) || undefined;
+  const today = todayKST();
+  const currentMonth = monthOf(today);
 
-  const [rows, ctx] = await Promise.all([
-    listTransactions({ month, type, walletId: wallet, categoryId: category, q }),
+  const view = parseInboxView(one(sp.view));
+  const monthParam = one(sp.month);
+  const month = isValidMonth(monthParam) ? monthParam : currentMonth;
+  // 지출/수입 and the category don't apply to transfers, so the transfer view ignores them.
+  const typeParam = one(sp.type);
+  const type = view !== "transfer" && (typeParam === "income" || typeParam === "expense") ? typeParam : undefined;
+  const walletParam = one(sp.wallet);
+  const wallet = walletParam && UUID.test(walletParam) ? walletParam : undefined;
+  const categoryParam = one(sp.category);
+  const category =
+    view !== "transfer" && categoryParam && (categoryParam === "none" || UUID.test(categoryParam)) ? categoryParam : undefined;
+  const q = one(sp.q)?.trim().slice(0, 100) || undefined;
+  const idParam = one(sp.id);
+  const requestedId = idParam && UUID.test(idParam) ? idParam : null;
+
+  const query: InboxQuery = { view, month, type, wallet, category, q };
+  const unfiltered = !type && !wallet && !category && !q;
+  const listed = listTransactions({ month, view, type, walletId: wallet, categoryId: category, q });
+
+  // Side stats (같은 메모, the category card) need each relevant month unfiltered. The plain 전체 view
+  // already is that list; the review view needs every month its pending records fall in. Selection
+  // after load is client-only (replaceState), so a month left out here could never be filled in;
+  // pending lists are short, so load them all.
+  const statsFor = async (m: string): Promise<[string, MonthStats]> => {
+    const [monthRows, usual] = await Promise.all([
+      view === "all" && unfiltered && m === month ? listed : listTransactions({ month: m }),
+      getCategoryUsual(m),
+    ]);
+    return [m, { rows: monthRows.map(toStatRow), usual }];
+  };
+  const statEntries =
+    view === "review"
+      ? listed.then((rows) => Promise.all([...new Set(rows.map((r) => monthOf(r.date)))].map(statsFor)))
+      : Promise.all([statsFor(month)]);
+
+  const [rows, stats, ctx, reviewCount, walletRows] = await Promise.all([
+    listed,
+    statEntries,
     getEntryContext(),
+    getReviewCount(),
+    getWallets(),
   ]);
 
-  const income = rows.filter((r) => r.type === "income").reduce((s, r) => s + r.amount, 0);
-  const expense = rows.filter((r) => r.type === "expense").reduce((s, r) => s + r.amount, 0);
+  const wallets: WalletBalance[] = walletRows.map(({ id, name, kind, color, balance, archived }) => ({
+    id,
+    name,
+    kind,
+    color,
+    balance,
+    archived,
+  }));
 
   return (
-    <div className="space-y-5">
-      <PageHeader title="거래 내역">
-        <MonthNav
-          month={month}
-          basePath="/transactions"
-          params={{ type, wallet, category, q }}
-        />
-        <NewTransactionButton />
-      </PageHeader>
-
-      <FiltersBar values={{ month: monthParam === month ? month : undefined, type, wallet, category, q }} ctx={ctx} />
-
-      <div className="flex items-center gap-6 text-sm">
-        <span className="text-muted-foreground">{rows.length}건</span>
-        <span>
-          수입 <span className="num font-semibold text-income">{formatKRW(income)}</span>
-        </span>
-        <span>
-          지출 <span className="num font-semibold">{formatKRW(expense)}</span>
-        </span>
-        <span>
-          합계 <span className="num font-semibold">{formatSignedKRW(income - expense)}</span>
-        </span>
-        <span className="ml-auto hidden items-center gap-1 text-xs text-muted-foreground lg:flex">
-          <Kbd>J</Kbd>
-          <Kbd>K</Kbd> 이동 · <Kbd>Enter</Kbd> 수정 · <Kbd>⌫</Kbd> 삭제
-        </span>
-      </div>
-
-      <TransactionsTable rows={rows} />
-    </div>
+    <Inbox
+      query={query}
+      requestedId={requestedId}
+      rows={rows}
+      stats={Object.fromEntries(stats)}
+      ctx={ctx}
+      reviewCount={reviewCount}
+      wallets={wallets}
+      today={today}
+    />
   );
 }
 
-function TransactionsSkeleton() {
-  return (
-    <div className="space-y-5">
-      <div className="flex justify-between">
-        <Skeleton className="h-8 w-32" />
-        <Skeleton className="h-8 w-64" />
-      </div>
-      <Skeleton className="h-8 w-full" />
-      <Skeleton className="h-96 w-full" />
-    </div>
-  );
+function toStatRow({ id, type, amount, date, memo, categoryId }: TransactionRow) {
+  return { id, type, amount, date, memo, categoryId };
 }

@@ -13,6 +13,8 @@ export const auth = betterAuth({
   },
   session: {
     expiresIn: 60 * 60 * 24 * 30, // 30 days: this is a personal app, stay signed in
+    // Slide at most once a day. Only the browser's get-session call slides it, so the cookie moves with
+    // the DB row (see getCurrentUser in src/server/session.ts).
     updateAge: 60 * 60 * 24,
   },
   databaseHooks: {

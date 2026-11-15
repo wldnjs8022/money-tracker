@@ -1,227 +1,369 @@
 "use client";
 
-import { Loader2Icon, PlusIcon, Trash2Icon } from "lucide-react";
-import { useState } from "react";
+import { PlusIcon, TagIcon } from "@phosphor-icons/react";
+import { Tabs as TabsPrimitive } from "radix-ui";
+import { useEffect, useMemo, useOptimistic, useRef, useState, useTransition } from "react";
 import { toast } from "sonner";
-import { CategoryIcon } from "@/components/common";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
+import { Amount, EmptyState, FullBleed, PaneHeader } from "@/components/common";
+import { CategoryIcon } from "@/components/icons";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
+import { tabPillVariants } from "@/components/ui/tabs";
+import { useHotkeys } from "@/lib/hotkeys";
+import { formatKRW } from "@/lib/money";
 import { cn } from "@/lib/utils";
-import { createCategory, deleteCategory, updateCategory } from "@/server/actions";
-import type { CategoryRow } from "@/server/queries";
+import { addCategoryKeyword, deleteCategory, updateCategory, type ActionResult } from "@/server/actions";
+import type { CategoryRow, TransactionRow } from "@/server/queries";
+import {
+  attempt,
+  ListKeysHint,
+  ListRow,
+  quoted,
+  useCreateDialog,
+  useListNavigation,
+  useMirrorSelection,
+  useSelection,
+} from "@/components/wallets/ledger-kit";
+import { CategoryCreateDialog } from "./category-create-dialog";
+import { CategoryDetail, type CategoryPatch } from "./category-detail";
+import { KIND_LABEL, KINDS, type CategoryKind } from "./category-fields";
 
-const COLORS = ["#f97316", "#a16207", "#06b6d4", "#3b82f6", "#14b8a6", "#ec4899", "#8b5cf6", "#6366f1", "#eab308", "#ef4444", "#0ea5e9", "#d946ef", "#16a34a", "#94a3b8"];
-const EMOJIS = ["🍚", "☕", "🛵", "🚇", "🧺", "🛍️", "🏠", "🔁", "🎬", "💊", "📚", "🎁", "🐶", "👶", "💇", "🍺", "✈️", "🚗", "💼", "💰", "📈", "🧧", "💳", "📦"];
+const PATH = "/categories";
 
-type Kind = "income" | "expense";
-type Editing = { kind: Kind; category: CategoryRow | null };
+/**
+ * Optimistic edits. Keyword changes are relative (add these / drop this one), so edits queued one
+ * after another compose on the screen however their server calls interleave.
+ */
+type OptimisticChange =
+  | { id: string; patch: CategoryPatch }
+  | { id: string; addKeywords: string[] }
+  | { id: string; removeKeyword: string }
+  | { id: string; removed: true };
 
-export function CategoriesView({ categories }: { categories: CategoryRow[] }) {
-  const [editing, setEditing] = useState<Editing | null>(null);
-
-  return (
-    <>
-      <div className="grid gap-6 lg:grid-cols-2">
-        {(["expense", "income"] as const).map((kind) => (
-          <Card key={kind}>
-            <CardHeader className="flex-row items-center justify-between">
-              <CardTitle>{kind === "expense" ? "지출 카테고리" : "수입 카테고리"}</CardTitle>
-              <Button size="sm" variant="outline" onClick={() => setEditing({ kind, category: null })}>
-                <PlusIcon />
-                추가
-              </Button>
-            </CardHeader>
-            <CardContent className="space-y-0.5">
-              {categories
-                .filter((c) => c.kind === kind)
-                .map((c) => (
-                  <button
-                    key={c.id}
-                    type="button"
-                    onClick={() => setEditing({ kind, category: c })}
-                    className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors hover:bg-muted"
-                  >
-                    <CategoryIcon icon={c.icon} color={c.color} />
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium">{c.name}</p>
-                      <p className="truncate text-xs text-muted-foreground">
-                        {c.keywords.length > 0 ? c.keywords.join(", ") : "키워드 없음"}
-                      </p>
-                    </div>
-                    <span className="text-xs text-muted-foreground">{c.txnCount}건</span>
-                  </button>
-                ))}
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-
-      <Dialog open={editing !== null} onOpenChange={(open) => !open && setEditing(null)}>
-        <DialogContent className="sm:max-w-md">
-          {editing && <CategoryForm editing={editing} onDone={() => setEditing(null)} />}
-        </DialogContent>
-      </Dialog>
-    </>
-  );
+function applyChange(list: CategoryRow[], change: OptimisticChange): CategoryRow[] {
+  if ("removed" in change) return list.filter((c) => c.id !== change.id);
+  return list.map((c) => {
+    if (c.id !== change.id) return c;
+    if ("patch" in change) return { ...c, ...change.patch };
+    if ("removeKeyword" in change) return { ...c, keywords: c.keywords.filter((k) => k !== change.removeKeyword) };
+    const fresh = change.addKeywords.filter((w) => !c.keywords.some((k) => k.toLowerCase() === w.toLowerCase()));
+    return { ...c, keywords: [...c.keywords, ...fresh] };
+  });
 }
 
-function CategoryForm({ editing, onDone }: { editing: Editing; onDone: () => void }) {
-  const { kind, category } = editing;
-  const [name, setName] = useState(category?.name ?? "");
-  const [icon, setIcon] = useState(category?.icon ?? "📦");
-  const [color, setColor] = useState(category?.color ?? COLORS[0]);
-  const [keywords, setKeywords] = useState((category?.keywords ?? []).join(", "));
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState("");
+const toInput = (c: CategoryRow) => ({ kind: c.kind, name: c.name, icon: c.icon, color: c.color, keywords: c.keywords });
 
-  async function save() {
-    setPending(true);
-    setError("");
-    const input = {
-      kind,
-      name,
-      icon,
-      color,
-      keywords: keywords.split(/[,\n]/).map((k) => k.trim()).filter(Boolean),
-    };
-    const result = category ? await updateCategory(category.id, input) : await createCategory(input);
-    setPending(false);
-    if (!result.ok) return setError(result.error);
-    toast.success(category ? "저장했어요" : "카테고리를 추가했어요");
-    onDone();
+/**
+ * 카테고리 screen. Left: 지출 / 수입 tabs, each category with this month's amount. Right: the selected
+ * category. The selection is client state mirrored to ?id=; edits are optimistic and the server's
+ * refresh() brings the confirmed data.
+ */
+export function CategoriesView({
+  categories,
+  usual,
+  records,
+  month,
+  today,
+}: {
+  categories: CategoryRow[];
+  /** Average month per category id over the 3 months before this one. */
+  usual: Record<string, number>;
+  /** This month's records. */
+  records: TransactionRow[];
+  month: string;
+  today: string;
+}) {
+  const [items, addOptimistic] = useOptimistic(categories, applyChange);
+  const [, startTransition] = useTransition();
+  const [selectedId, setSelectedId] = useSelection(PATH);
+  const [createOpen, setCreateOpen] = useCreateDialog(PATH);
+  // The open tab while nothing on it is selected (an empty 수입 tab); otherwise the selection says it.
+  const [tab, setTab] = useState<CategoryKind>("expense");
+  // The last category picked on each tab, so switching tabs comes back to it.
+  const lastByKind = useRef<Partial<Record<CategoryKind, string>>>({});
+  const addButtonRef = useRef<HTMLButtonElement>(null);
+  // Set when a delete takes the detail (and its confirm dialog) away: focus goes to this row next.
+  const focusAfterRemoval = useRef<string | null | undefined>(undefined);
+
+  const monthly = useMemo(() => {
+    const byCategory = new Map<string, TransactionRow[]>();
+    const totals: Record<CategoryKind, number> = { expense: 0, income: 0 };
+    const uncategorized: Record<CategoryKind, number> = { expense: 0, income: 0 };
+    for (const row of records) {
+      if (row.type === "transfer") continue;
+      totals[row.type] += row.amount;
+      if (!row.categoryId) {
+        uncategorized[row.type] += row.amount;
+        continue;
+      }
+      const list = byCategory.get(row.categoryId);
+      if (list) list.push(row);
+      else byCategory.set(row.categoryId, [row]);
+    }
+    return { byCategory, totals, uncategorized };
+  }, [records]);
+
+  const byKind: Record<CategoryKind, CategoryRow[]> = {
+    expense: items.filter((c) => c.kind === "expense"),
+    income: items.filter((c) => c.kind === "income"),
+  };
+  const picked = items.find((c) => c.id === selectedId);
+  const kind: CategoryKind = picked?.kind ?? tab;
+  const list = byKind[kind];
+  const selected = picked ?? list[0] ?? null;
+  const keywordCount = items.reduce((sum, c) => sum + c.keywords.length, 0);
+  const monthNo = Number(month.slice(5));
+  useMirrorSelection(PATH, selected?.id ?? null, categories);
+
+  /** Selects a category (or nothing on `onTab`); `onTab` also names the tab of one not loaded yet. */
+  function select(id: string | null, onTab?: CategoryKind) {
+    const next = onTab ?? items.find((c) => c.id === id)?.kind;
+    if (next) setTab(next);
+    if (id && next) lastByKind.current[next] = id;
+    setSelectedId(id);
   }
 
-  async function remove() {
-    if (!category) return;
-    setPending(true);
-    const result = await deleteCategory(category.id);
-    setPending(false);
-    if (!result.ok) return setError(result.error);
-    toast.success("삭제했어요");
-    onDone();
+  function changeKind(next: CategoryKind) {
+    if (next === kind) return;
+    const target = byKind[next].find((c) => c.id === lastByKind.current[next]) ?? byKind[next][0];
+    select(target?.id ?? null, next);
   }
+
+  const { listRef, move, onKeyDown: onListKeyDown } = useListNavigation(
+    list.map((c) => c.id),
+    selected?.id ?? null,
+    select,
+  );
+  useHotkeys({ j: () => move("next"), k: () => move("prev") });
+
+  useEffect(() => {
+    const target = focusAfterRemoval.current;
+    if (target === undefined) return;
+    focusAfterRemoval.current = undefined;
+    const row = target ? listRef.current?.querySelector<HTMLElement>(`[data-row-id="${target}"]`) : null;
+    (row ?? addButtonRef.current)?.focus({ preventScroll: true });
+    row?.scrollIntoView({ block: "nearest" });
+  });
+
+  /** One optimistic edit and its server call; a refusal rolls the edit back with a toast. */
+  function save(change: OptimisticChange, run: () => Promise<ActionResult>, onSaved?: () => void) {
+    startTransition(async () => {
+      addOptimistic(change);
+      const result = await attempt(run);
+      if (!result.ok) toast.error(result.error);
+      else onSaved?.();
+    });
+  }
+
+  /**
+   * Edits from the detail pane pin the selection first, so a category that was only selected as
+   * "the first on the tab" stays selected whatever the list does next.
+   */
+  function pin(category: CategoryRow) {
+    if (selectedId !== category.id) select(category.id);
+  }
+
+  function patchCategory(category: CategoryRow, patch: CategoryPatch) {
+    pin(category);
+    save({ id: category.id, patch }, () => updateCategory(category.id, toInput({ ...category, ...patch })));
+  }
+
+  function addKeywords(category: CategoryRow, words: string[]) {
+    const fresh = words.filter((w) => !category.keywords.some((k) => k.toLowerCase() === w.toLowerCase()));
+    if (fresh.length === 0) return;
+    pin(category);
+    save({ id: category.id, addKeywords: fresh }, () =>
+      fresh.length === 1
+        ? addCategoryKeyword(category.id, fresh[0])
+        : updateCategory(category.id, toInput({ ...category, keywords: [...category.keywords, ...fresh] })),
+    );
+  }
+
+  function removeKeyword(category: CategoryRow, word: string) {
+    const keywords = category.keywords.filter((k) => k !== word);
+    pin(category);
+    save(
+      { id: category.id, removeKeyword: word },
+      () => updateCategory(category.id, toInput({ ...category, keywords })),
+      () =>
+        toast(`${quoted(word, "을", "를")} 키워드에서 뺐어요`, {
+          duration: 8000,
+          action: {
+            label: "되돌리기",
+            // Optimistic too, so an edit made right after the undo already counts the word back in.
+            // It leaves the selection where it is now.
+            onClick: () =>
+              save({ id: category.id, addKeywords: [word] }, () => addCategoryKeyword(category.id, word), () =>
+                toast.success(`${quoted(word, "을", "를")} 다시 넣었어요`),
+              ),
+          },
+        }),
+    );
+  }
+
+  // Gone from the list at once, with the selection (and focus) on its neighbour; the category comes
+  // back, selected, if the server refuses.
+  function removeCategory(category: CategoryRow) {
+    const siblings = byKind[category.kind];
+    const at = siblings.findIndex((c) => c.id === category.id);
+    const neighbor = siblings[at + 1] ?? siblings[at - 1] ?? null;
+    select(neighbor?.id ?? null, category.kind);
+    focusAfterRemoval.current = neighbor?.id ?? null;
+    startTransition(async () => {
+      addOptimistic({ id: category.id, removed: true });
+      const result = await attempt(() => deleteCategory(category.id));
+      if (!result.ok) {
+        toast.error(result.error);
+        select(category.id, category.kind);
+        return;
+      }
+      toast.success(`${quoted(category.name, "을", "를")} 지웠어요`);
+    });
+  }
+
+  const uncategorized = monthly.uncategorized[kind];
 
   return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        void save();
-      }}
-      className="space-y-5"
-    >
-      <DialogHeader>
-        <DialogTitle>
-          {category ? "카테고리 편집" : `${kind === "expense" ? "지출" : "수입"} 카테고리 추가`}
-        </DialogTitle>
-        <DialogDescription>키워드를 등록하면 빠른 입력에서 자동으로 이 카테고리로 분류돼요.</DialogDescription>
-      </DialogHeader>
-
-      <div className="grid grid-cols-[4rem_1fr] gap-3">
-        <div className="space-y-2">
-          <Label htmlFor="cat-icon">아이콘</Label>
-          <Input id="cat-icon" value={icon} onChange={(e) => setIcon(e.target.value)} className="text-center text-lg" maxLength={4} />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="cat-name">이름</Label>
-          <Input id="cat-name" autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="예: 반려동물" />
-        </div>
-      </div>
-
-      <div className="flex flex-wrap gap-1">
-        {EMOJIS.map((e) => (
-          <button
-            key={e}
-            type="button"
-            onClick={() => setIcon(e)}
-            className={cn("size-8 rounded-md text-base hover:bg-muted", e === icon && "bg-muted ring-1 ring-border")}
+    <FullBleed>
+      <section aria-label="카테고리 목록" className="flex w-[300px] shrink-0 flex-col border-r border-line-soft lg:w-[340px]">
+        <PaneHeader title="카테고리" description={`키워드 ${keywordCount}개가 한 줄 입력을 나눠요`}>
+          <Button
+            ref={addButtonRef}
+            variant="outline"
+            aria-label={`${KIND_LABEL[kind]} 카테고리 추가`}
+            onClick={() => setCreateOpen(true)}
           >
-            {e}
-          </button>
-        ))}
-      </div>
+            <PlusIcon aria-hidden />
+            추가
+          </Button>
+        </PaneHeader>
 
-      <div className="space-y-2">
-        <Label>색</Label>
-        <div className="flex flex-wrap gap-2">
-          {COLORS.map((c) => (
-            <button
-              key={c}
-              type="button"
-              onClick={() => setColor(c)}
-              aria-label={c}
-              className={cn("size-6 rounded-full ring-offset-2 ring-offset-background", c === color && "ring-2 ring-foreground")}
-              style={{ backgroundColor: c }}
-            />
-          ))}
-        </div>
-      </div>
+        <TabsPrimitive.Root
+          value={kind}
+          onValueChange={(value) => changeKind(value as CategoryKind)}
+          className="flex min-h-0 flex-1 flex-col"
+        >
+          <TabsPrimitive.List aria-label="카테고리 종류" className="flex shrink-0 gap-1.5 px-3 pt-3 pb-2">
+            {KINDS.map((k) => (
+              <TabsPrimitive.Trigger key={k} value={k} className={tabPillVariants({ active: k === kind })}>
+                {KIND_LABEL[k]}
+                <span className="num font-semibold">{byKind[k].length}</span>
+              </TabsPrimitive.Trigger>
+            ))}
+          </TabsPrimitive.List>
+          {/* The list ref sits on one wrapper: Radix renders both panels and attaches a panel's ref only
+              once, at mount. The inactive panel is hidden and empty, so lookups find the open tab's rows. */}
+          <div ref={listRef} className="flex min-h-0 flex-1 flex-col">
+            {KINDS.map((k) => (
+              <TabsPrimitive.Content
+                key={k}
+                value={k}
+                onKeyDown={onListKeyDown}
+                className="min-h-0 flex-1 overflow-y-auto pb-3 focus-visible:outline-offset-[-2px]"
+              >
+                {byKind[k].length === 0 ? (
+                  <EmptyState
+                    icon={<TagIcon aria-hidden />}
+                    title={`${KIND_LABEL[k]} 카테고리가 없어요`}
+                    description="카테고리를 만들고 키워드를 넣어 두면 한 줄 입력이 알아서 나눠요."
+                    action={
+                      <Button variant="outline" onClick={() => setCreateOpen(true)}>
+                        <PlusIcon aria-hidden />
+                        카테고리 추가
+                      </Button>
+                    }
+                  />
+                ) : (
+                  byKind[k].map((category) => {
+                    const rows = monthly.byCategory.get(category.id) ?? [];
+                    const total = rows.reduce((sum, row) => sum + row.amount, 0);
+                    return (
+                      <ListRow
+                        key={category.id}
+                        id={category.id}
+                        selected={category.id === selected?.id}
+                        onSelect={(id) => select(id)}
+                      >
+                        <CategoryIcon icon={category.icon} color={category.color} className="size-8" />
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate font-semibold">{category.name}</span>
+                          <span className="block truncate text-xs text-ink-3">
+                            {rows.length > 0 ? `이번 달 ${rows.length}건` : "이번 달 기록 없음"} ·{" "}
+                            {category.keywords.length > 0 ? `키워드 ${category.keywords.length}개` : "키워드 없음"}
+                          </span>
+                        </span>
+                        {total > 0 ? (
+                          <Amount value={total} type={category.kind} className="shrink-0" />
+                        ) : (
+                          <span className="num shrink-0 font-bold text-ink-3">0원</span>
+                        )}
+                      </ListRow>
+                    );
+                  })
+                )}
+              </TabsPrimitive.Content>
+            ))}
+          </div>
+        </TabsPrimitive.Root>
 
-      <div className="space-y-2">
-        <Label htmlFor="cat-keywords">키워드</Label>
-        <Textarea
-          id="cat-keywords"
-          value={keywords}
-          onChange={(e) => setKeywords(e.target.value)}
-          placeholder="사료, 동물병원, 간식"
-          rows={3}
+        <footer className="shrink-0 space-y-2.5 border-t border-line-soft px-5 py-4">
+          <div>
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="text-xs font-bold text-ink-3">
+                {monthNo}월 {KIND_LABEL[kind]}
+              </span>
+              <span
+                className={cn(
+                  "text-xl font-extrabold tracking-[-0.03em] tabular-nums",
+                  monthly.totals[kind] === 0 ? "text-ink-3" : kind === "income" && "text-income",
+                )}
+              >
+                {formatKRW(monthly.totals[kind])}
+              </span>
+            </div>
+            {uncategorized > 0 && (
+              <p className="mt-0.5 text-right text-xs text-ink-3">
+                분류 없는 기록 <span className="num">{formatKRW(uncategorized)}</span> 포함
+              </p>
+            )}
+          </div>
+          {list.length > 1 && <ListKeysHint />}
+        </footer>
+      </section>
+
+      {selected ? (
+        <CategoryDetail
+          key={selected.id}
+          category={selected}
+          categories={items}
+          rows={monthly.byCategory.get(selected.id) ?? []}
+          usual={usual[selected.id]}
+          month={month}
+          today={today}
+          onPatch={(patch) => patchCategory(selected, patch)}
+          onAddKeywords={(words) => addKeywords(selected, words)}
+          onRemoveKeyword={(word) => removeKeyword(selected, word)}
+          onDelete={() => removeCategory(selected)}
         />
-        <p className="text-xs text-muted-foreground">쉼표로 구분해요. 예: &ldquo;사료 32000&rdquo;이라고 쓰면 이 카테고리로 들어가요.</p>
-      </div>
-
-      {error && <p className="text-sm text-destructive">{error}</p>}
-
-      <DialogFooter className="items-center sm:justify-between">
-        {category ? (
-          <AlertDialog>
-            <AlertDialogTrigger asChild>
-              <Button type="button" variant="destructive" disabled={pending}>
-                <Trash2Icon />
-                삭제
-              </Button>
-            </AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>&lsquo;{category.name}&rsquo; 카테고리를 삭제할까요?</AlertDialogTitle>
-                <AlertDialogDescription>
-                  {category.txnCount > 0
-                    ? `이 카테고리의 거래 ${category.txnCount}건은 지워지지 않고 '미분류'가 돼요.`
-                    : "이 카테고리에는 거래가 없어요."}
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>취소</AlertDialogCancel>
-                <AlertDialogAction onClick={remove}>삭제</AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
-        ) : (
-          <span />
-        )}
-        <div className="flex gap-2">
-          <Button type="button" variant="outline" onClick={onDone}>
-            취소
-          </Button>
-          <Button type="submit" disabled={pending}>
-            {pending && <Loader2Icon className="animate-spin" />}
-            저장
-          </Button>
+      ) : (
+        <div className="flex min-w-0 flex-1 items-center justify-center">
+          <EmptyState
+            icon={<TagIcon aria-hidden />}
+            title={`${KIND_LABEL[kind]} 카테고리가 아직 없어요`}
+            description="카테고리를 추가하면 여기서 이름, 아이콘, 키워드를 다듬고 이번 달 기록을 볼 수 있어요."
+          />
         </div>
-      </DialogFooter>
-    </form>
+      )}
+
+      <CategoryCreateDialog
+        open={createOpen}
+        defaultKind={kind}
+        categories={items}
+        onOpenChange={setCreateOpen}
+        onCreated={(id, createdKind) => {
+          setCreateOpen(false);
+          select(id, createdKind);
+        }}
+      />
+    </FullBleed>
   );
 }

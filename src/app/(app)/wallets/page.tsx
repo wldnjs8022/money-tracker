@@ -1,49 +1,31 @@
+import type { Metadata } from "next";
+import { connection } from "next/server";
 import { Suspense } from "react";
-import { PageHeader } from "@/components/common";
-import { Card, CardContent } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
+import { LedgerSkeleton } from "@/components/wallets/ledger-skeleton";
 import { WalletsView } from "@/components/wallets/wallets-view";
-import { formatKRW } from "@/lib/money";
-import { getWallets } from "@/server/queries";
+import { monthOf, todayKST } from "@/lib/dates";
+import { getWallets, listTransactions } from "@/server/queries";
 
-export default function WalletsPage({ searchParams }: PageProps<"/wallets">) {
+export const metadata: Metadata = { title: "계좌" };
+
+/*
+ * 계좌: wallet list (grouped by kind, net worth at the bottom) | the selected wallet's detail.
+ * The selection lives in ?id= and changes on the client without a server round trip, so the page
+ * loads this month's records for every wallet once and the view filters them per wallet (the same
+ * rows listTransactions({ month, walletId }) returns: records from or to that wallet).
+ */
+export default function WalletsPage() {
   return (
-    <Suspense fallback={<Skeleton className="h-96 w-full" />}>
-      <WalletsContent searchParams={searchParams} />
+    <Suspense fallback={<LedgerSkeleton label="계좌" />}>
+      <WalletsContent />
     </Suspense>
   );
 }
 
-async function WalletsContent({ searchParams }: { searchParams: PageProps<"/wallets">["searchParams"] }) {
-  const sp = await searchParams;
-  const wallets = await getWallets();
-  const netWorth = wallets.reduce((s, w) => s + w.balance, 0);
-  const assets = wallets.filter((w) => w.balance > 0).reduce((s, w) => s + w.balance, 0);
-  const debts = wallets.filter((w) => w.balance < 0).reduce((s, w) => s + w.balance, 0);
-
-  return (
-    <div className="space-y-6">
-      <PageHeader
-        title="계좌"
-        description="잔액은 시작 잔액에 거래를 더해 자동으로 계산돼요. 카드값 납부는 통장 → 카드 이체로 기록하세요."
-      />
-      <Card>
-        <CardContent className="grid grid-cols-3 divide-x">
-          <Summary label="순자산" value={formatKRW(netWorth)} strong />
-          <Summary label="자산" value={formatKRW(assets)} />
-          <Summary label="부채 (카드값 등)" value={formatKRW(Math.abs(debts))} className="text-expense" />
-        </CardContent>
-      </Card>
-      <WalletsView wallets={wallets} startWithNew={sp.new === "1"} />
-    </div>
-  );
-}
-
-function Summary({ label, value, strong, className }: { label: string; value: string; strong?: boolean; className?: string }) {
-  return (
-    <div className="space-y-1 px-6 first:pl-0">
-      <p className="text-sm text-muted-foreground">{label}</p>
-      <p className={`num tracking-tight ${strong ? "text-3xl font-bold" : "text-xl font-semibold"} ${className ?? ""}`}>{value}</p>
-    </div>
-  );
+async function WalletsContent() {
+  await connection();
+  const today = todayKST();
+  const month = monthOf(today);
+  const [wallets, records] = await Promise.all([getWallets(), listTransactions({ month })]);
+  return <WalletsView wallets={wallets} records={records} month={month} today={today} />;
 }

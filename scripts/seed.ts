@@ -4,10 +4,11 @@
  *   npm run db:seed
  *
  * Local development only. Signs up the demo user if it doesn't exist yet (which also creates
- * the default wallets and categories), then replaces all of its transactions.
+ * the default wallets and categories), then replaces all of its transactions. The newest few
+ * records wait in the review queue (확인할 것) with a mix of reasons.
  */
 import "./load-env";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "../src/db";
 import { categories, transactions, user, wallets } from "../src/db/schema";
 import { addDays, addMonths, daysInMonth, isWeekend, monthOf, todayKST } from "../src/lib/dates";
@@ -132,10 +133,38 @@ async function main() {
   }
   add({ type: "expense", amount: 100_000, date: addDays(today, -40), walletId: bank, categoryId: category("경조사·선물"), memo: "친구 결혼식 축의금" });
 
+  // Nothing below calls rand(), so the generated records above stay identical on every run.
+
+  // The last week's everyday spending came from the quick entry box: keep each line as typed.
+  const typedSince = addDays(today, -6);
+  const typedCategories = new Set(["식비", "카페·간식", "배달", "교통"].map(category));
+  let typed = 0;
+  for (const row of rows) {
+    if (row.type !== "expense" || row.date < typedSince || !row.categoryId || !typedCategories.has(row.categoryId)) continue;
+    const tags = (row.tags ?? []).map((tag) => ` #${tag}`).join("");
+    row.sourceText = `${row.memo ?? ""} ${row.amount}${typed % 3 === 0 ? " 카드" : ""}${tags}`;
+    typed += 1;
+  }
+
+  // The newest records still wait in 확인할 것, one or more for each reason.
+  const aiLine = "점심 마라탕 11000 공차 버블티 4800 카드";
+  const pending: Omit<Row, "userId" | "createdAt">[] = [
+    { type: "expense", amount: 17_500, date: addDays(today, -2), walletId: card, categoryId: null, memo: "정형외과 진료", reviewReason: "uncategorized", sourceText: "정형외과 진료 17500 카드" },
+    { type: "expense", amount: 12_000, date: addDays(today, -1), walletId: card, categoryId: category("생활"), memo: "다이소 수납함", reviewReason: "new_place", sourceText: "다이소 수납함 12000" },
+    { type: "expense", amount: 11_000, date: today, walletId: card, categoryId: category("식비"), memo: "점심 마라탕", reviewReason: "ai", sourceText: aiLine },
+    { type: "expense", amount: 4_800, date: today, walletId: card, categoryId: category("카페·간식"), memo: "공차 버블티", reviewReason: "ai", sourceText: aiLine },
+  ];
+
   for (let i = 0; i < rows.length; i += 500) {
     await db.insert(transactions).values(rows.slice(i, i + 500));
   }
-  console.log(`Seeded ${rows.length} transactions for ${DEMO_USER.email} (${firstMonth} ~ ${today})`);
+  // Created after everything else (on the database clock), a second apart, so they top their days in a fixed order.
+  await db
+    .insert(transactions)
+    .values(pending.map((row, i) => ({ ...row, userId, createdAt: sql`now() + make_interval(secs => ${i})` })));
+
+  console.log(`Seeded ${rows.length + pending.length} transactions for ${DEMO_USER.email} (${firstMonth} ~ ${today})`);
+  console.log(`Waiting for review: ${pending.map((row) => `${row.date} ${row.memo} (${row.reviewReason})`).join(", ")}`);
   process.exit(0);
 }
 

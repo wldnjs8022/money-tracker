@@ -3,26 +3,28 @@
 import {
   CalendarIcon,
   KeyboardIcon,
-  LayoutDashboardIcon,
-  ListIcon,
-  LogOutIcon,
+  ListChecksIcon,
+  MagnifyingGlassIcon,
   MoonIcon,
+  NotePencilIcon,
+  PencilSimpleLineIcon,
   PlusIcon,
-  SparklesIcon,
+  SignOutIcon,
   SunIcon,
-  TagsIcon,
-  WalletIcon,
-} from "lucide-react";
+} from "@phosphor-icons/react";
 import { useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
 import { useState } from "react";
+import { toast } from "sonner";
+import { chordKeys, NAV, type NavItem } from "@/components/app/nav";
 import { useUI } from "@/components/app/ui-provider";
-import { TYPE_LABEL } from "@/components/common";
-import { useQuickParse, saveQuickEntry } from "@/components/transactions/quick-entry-dialog";
+import { useSignOut } from "@/components/app/use-sign-out";
+import { Amount, Kbd, TYPE_LABEL } from "@/components/common";
+import { CategoryIcon } from "@/components/icons";
+import { saveQuickEntry, useQuickParse } from "@/components/transactions/quick-entry-dialog";
 import {
   Command,
   CommandDialog,
-  CommandEmpty,
   CommandGroup,
   CommandInput,
   CommandItem,
@@ -30,153 +32,206 @@ import {
   CommandSeparator,
   CommandShortcut,
 } from "@/components/ui/command";
-import { authClient } from "@/lib/auth-client";
-import { addMonths, currentMonthKST } from "@/lib/dates";
-import { formatKRW } from "@/lib/money";
+import { addMonths, currentMonthKST, formatMonthKo } from "@/lib/dates";
+import { hasOneConfidentAmount } from "@/lib/quick-entry";
 import type { EntryContext } from "@/server/queries";
-import { toast } from "sonner";
+
+/** Extra words each section answers to, including the names the old app used. */
+const NAV_KEYWORDS: Record<NavItem["href"], string[]> = {
+  "/": ["대시보드", "home"],
+  "/transactions": ["거래", "내역", "기록함", "transactions"],
+  "/wallets": ["지갑", "통장", "카드", "wallets"],
+  "/categories": ["분류", "categories"],
+};
 
 export function CommandPalette({ ctx }: { ctx: EntryContext }) {
-  const { paletteOpen, setPaletteOpen, setQuickEntryOpen, openNewTransaction, setHelpOpen } = useUI();
-  const router = useRouter();
-  const { setTheme, resolvedTheme } = useTheme();
-  const parse = useQuickParse(ctx);
-  const [search, setSearch] = useState("");
-
-  // Typing "커피 4500" in the palette offers to record it right away.
-  const parsed = search.trim() ? parse(search) : null;
-  const canRecord = parsed?.amount && parsed.walletId && (parsed.type !== "transfer" || parsed.toWalletId);
-  const parsedCategory = ctx.categories.find((c) => c.id === parsed?.categoryId);
-
-  function run(action: () => void | Promise<void>) {
-    setPaletteOpen(false);
-    setSearch("");
-    void action();
-  }
-
-  const go = (href: string) => run(() => router.push(href));
-  const month = currentMonthKST();
-
+  const { paletteOpen, setPaletteOpen } = useUI();
   return (
     <CommandDialog
       open={paletteOpen}
-      onOpenChange={(open) => {
-        setPaletteOpen(open);
-        if (!open) setSearch("");
-      }}
-      title="명령 팔레트"
-      description="이동하거나 기록하거나 찾기"
-      className="sm:max-w-xl"
+      onOpenChange={setPaletteOpen}
+      title="검색 · 명령"
+      description="이동하거나, 바로 기록하거나, 기록을 찾아요"
+      className="sm:max-w-[600px]"
     >
-      <Command>
-        <CommandInput value={search} onValueChange={setSearch} placeholder="페이지 이동, 카테고리 찾기, 또는 '커피 4500'으로 바로 기록" />
-        <CommandList className="max-h-[420px]">
-          <CommandEmpty>찾는 게 없어요.</CommandEmpty>
+      {/* Mounted with the dialog content: the search survives the close animation and resets on open. */}
+      <PaletteBody ctx={ctx} />
+    </CommandDialog>
+  );
+}
 
-          {canRecord && parsed && (
-            <CommandGroup heading="바로 기록">
+function PaletteBody({ ctx }: { ctx: EntryContext }) {
+  const { paletteOpen, setPaletteOpen, setQuickEntryOpen, openNewTransaction, setHelpOpen } = useUI();
+  const router = useRouter();
+  const { setTheme, resolvedTheme } = useTheme();
+  const signOut = useSignOut();
+  const parse = useQuickParse(ctx);
+  const [search, setSearch] = useState("");
+
+  // Typing "커피 4500" offers to record it right away (rule parser, saved as a quick entry). Only with
+  // exactly one amount typed on its own that looks like a price: "GS25", "이마트 24" or "아이폰 15" is
+  // something to search for, not a 25원 expense, and a line with two amounts needs quick entry (N) to
+  // split it. Otherwise 찾기 comes first.
+  const query = search.trim();
+  const parsed = query && hasOneConfidentAmount(query) ? parse(query) : null;
+  const recordable =
+    parsed && parsed.amount && parsed.walletId && (parsed.type !== "transfer" || parsed.toWalletId) ? parsed : null;
+  const recordCategory = ctx.categories.find((c) => c.id === recordable?.categoryId);
+  const recordWallet = ctx.wallets.find((w) => w.id === recordable?.walletId);
+  const lastMonth = addMonths(currentMonthKST(), -1);
+  const dark = resolvedTheme === "dark";
+
+  // The body stays mounted (and the item selectable) while the dialog fades out, so a second
+  // Enter or a double-click must not run the action again (e.g. save "바로 기록" twice).
+  function run(action: () => void | Promise<void>) {
+    if (!paletteOpen) return;
+    setPaletteOpen(false);
+    void action();
+  }
+  const go = (href: string) => run(() => router.push(href));
+
+  return (
+    <Command>
+      <CommandInput value={search} onValueChange={setSearch} placeholder="이동, 기록 찾기, 또는 '커피 4500'으로 바로 기록" />
+      <CommandList className="max-h-[440px]">
+        {/* No empty state: with a query, 바로 하기 always offers at least "기록에서 찾기". cmdk leaves
+            force-mounted items out of its filter, so the group has to be force-mounted too. */}
+        {query && (
+          <CommandGroup heading="바로 하기" forceMount>
+            {recordable && (
               <CommandItem
-                value={`record ${search}`}
+                value={`record ${query}`}
                 forceMount
                 onSelect={() =>
                   run(async () => {
-                    const error = await saveQuickEntry(parsed, ctx);
-                    if (error) toast.error(error);
+                    try {
+                      const error = await saveQuickEntry(recordable, ctx, query);
+                      if (error) toast.error(error);
+                    } catch {
+                      toast.error("서버에 닿지 못했어요. 연결을 확인하고 다시 해 주세요.");
+                    }
                   })
                 }
               >
-                <SparklesIcon className="text-brand" />
-                <span>
-                  {TYPE_LABEL[parsed.type]}
-                  {parsedCategory ? ` · ${parsedCategory.icon} ${parsedCategory.name}` : ""}
-                  {parsed.memo ? ` · ${parsed.memo}` : ""}
+                <span aria-hidden className="flex size-6 items-center justify-center rounded-[6px] bg-primary text-primary-foreground">
+                  <PlusIcon weight="bold" className="size-3.5" />
                 </span>
-                <span className="num ml-auto font-semibold">{formatKRW(parsed.amount!)}</span>
+                <span className="min-w-0 flex-1 truncate">
+                  <span className="font-semibold">바로 기록</span>
+                  <span className="text-ink-3">
+                    {" · "}
+                    {[
+                      TYPE_LABEL[recordable.type],
+                      recordable.type === "transfer" ? null : (recordCategory?.name ?? "분류 없음"),
+                      recordable.memo || null,
+                      recordWallet?.name,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </span>
+                </span>
+                {/* Ink on the wrapper, so income and transfer keep Amount's own colors. */}
+                <CommandShortcut className="text-foreground group-data-selected/command-item:text-foreground">
+                  <Amount value={recordable.amount ?? 0} type={recordable.type} className="text-sm" />
+                </CommandShortcut>
               </CommandItem>
-            </CommandGroup>
-          )}
-
-          <CommandGroup heading="기록">
-            <CommandItem onSelect={() => run(() => setQuickEntryOpen(true))}>
-              <SparklesIcon />
-              빠른 입력
-              <CommandShortcut>N</CommandShortcut>
-            </CommandItem>
-            <CommandItem onSelect={() => run(() => openNewTransaction())}>
-              <PlusIcon />새 거래 (자세히)
-            </CommandItem>
-            <CommandItem onSelect={() => go("/wallets?new=1")}>
-              <WalletIcon />새 계좌 추가
+            )}
+            <CommandItem
+              value={`search ${query}`}
+              forceMount
+              onSelect={() => go(`/transactions?q=${encodeURIComponent(query.slice(0, 100))}`)}
+            >
+              <MagnifyingGlassIcon aria-hidden />
+              <span className="min-w-0 flex-1 truncate">
+                기록에서 <span className="font-semibold">‘{query}’</span> 찾기
+              </span>
             </CommandItem>
           </CommandGroup>
+        )}
 
-          <CommandGroup heading="이동">
-            <CommandItem onSelect={() => go("/")}>
-              <LayoutDashboardIcon />
-              대시보드
-              <CommandShortcut>G D</CommandShortcut>
-            </CommandItem>
-            <CommandItem onSelect={() => go("/transactions")}>
-              <ListIcon />
-              거래 내역
-              <CommandShortcut>G T</CommandShortcut>
-            </CommandItem>
-            <CommandItem onSelect={() => go("/wallets")}>
-              <WalletIcon />
-              계좌
-              <CommandShortcut>G W</CommandShortcut>
-            </CommandItem>
-            <CommandItem onSelect={() => go("/categories")}>
-              <TagsIcon />
-              카테고리
-              <CommandShortcut>G C</CommandShortcut>
-            </CommandItem>
-            <CommandItem onSelect={() => go(`/transactions?month=${addMonths(month, -1)}`)}>
-              <CalendarIcon />
-              지난달 거래 내역
-            </CommandItem>
-          </CommandGroup>
+        <CommandGroup heading="기록">
+          <CommandItem value="한 줄 입력 빠른 기록" onSelect={() => run(() => setQuickEntryOpen(true))}>
+            <PencilSimpleLineIcon aria-hidden />
+            한 줄 입력
+            <CommandShortcut>
+              <Kbd>N</Kbd>
+            </CommandShortcut>
+          </CommandItem>
+          <CommandItem value="자세히 기록 새 기록" onSelect={() => run(() => openNewTransaction())}>
+            <NotePencilIcon aria-hidden />
+            자세히 기록
+          </CommandItem>
+          <CommandItem value="확인할 것 보기 리뷰" onSelect={() => go("/transactions?view=review")}>
+            <ListChecksIcon aria-hidden />
+            확인할 것 보기
+          </CommandItem>
+          <CommandItem value="새 계좌 추가" onSelect={() => go("/wallets?new=1")}>
+            <PlusIcon aria-hidden />새 계좌 추가
+          </CommandItem>
+        </CommandGroup>
 
-          <CommandGroup heading="카테고리별 이번 달 내역">
+        <CommandGroup heading="이동">
+          {NAV.map((item) => {
+            const [first, second] = chordKeys(item);
+            return (
+              <CommandItem
+                key={item.href}
+                value={`${item.label} 이동`}
+                keywords={NAV_KEYWORDS[item.href]}
+                onSelect={() => go(item.href)}
+              >
+                <item.icon aria-hidden />
+                {item.label}
+                <CommandShortcut className="flex gap-1">
+                  <Kbd>{first}</Kbd>
+                  <Kbd>{second}</Kbd>
+                </CommandShortcut>
+              </CommandItem>
+            );
+          })}
+          <CommandItem value="지난달 기록 이동" onSelect={() => go(`/transactions?month=${lastMonth}`)}>
+            <CalendarIcon aria-hidden />
+            지난달 기록
+            <CommandShortcut>{formatMonthKo(lastMonth)}</CommandShortcut>
+          </CommandItem>
+        </CommandGroup>
+
+        {ctx.categories.length > 0 && (
+          <CommandGroup heading="카테고리별 이번 달 기록">
             {ctx.categories.map((c) => (
               <CommandItem
                 key={c.id}
-                value={`category ${c.name} ${c.keywords.join(" ")}`}
+                value={`${c.name} ${c.kind === "income" ? "수입" : "지출"} 카테고리`}
+                keywords={c.keywords}
                 onSelect={() => go(`/transactions?category=${c.id}`)}
               >
-                <span className="w-4 text-center">{c.icon}</span>
+                <CategoryIcon icon={c.icon} color={c.color} className="size-6 rounded-[6px]" />
                 {c.name}
-                <span className="ml-auto text-xs text-muted-foreground">{c.kind === "income" ? "수입" : "지출"}</span>
+                <CommandShortcut>{c.kind === "income" ? "수입" : "지출"}</CommandShortcut>
               </CommandItem>
             ))}
           </CommandGroup>
+        )}
 
-          <CommandSeparator />
-          <CommandGroup heading="설정">
-            <CommandItem onSelect={() => run(() => setTheme(resolvedTheme === "dark" ? "light" : "dark"))}>
-              {resolvedTheme === "dark" ? <SunIcon /> : <MoonIcon />}
-              {resolvedTheme === "dark" ? "라이트 모드" : "다크 모드"}
-            </CommandItem>
-            <CommandItem onSelect={() => run(() => setHelpOpen(true))}>
-              <KeyboardIcon />
-              단축키 보기
-              <CommandShortcut>?</CommandShortcut>
-            </CommandItem>
-            <CommandItem
-              onSelect={() =>
-                run(async () => {
-                  await authClient.signOut();
-                  router.replace("/login");
-                  router.refresh();
-                })
-              }
-            >
-              <LogOutIcon />
-              로그아웃
-            </CommandItem>
-          </CommandGroup>
-        </CommandList>
-      </Command>
-    </CommandDialog>
+        <CommandSeparator />
+        <CommandGroup heading="설정">
+          <CommandItem value="테마 바꾸기 다크 라이트 모드" onSelect={() => run(() => setTheme(dark ? "light" : "dark"))}>
+            {dark ? <SunIcon aria-hidden /> : <MoonIcon aria-hidden />}
+            {dark ? "라이트 모드로" : "다크 모드로"}
+          </CommandItem>
+          <CommandItem value="단축키 보기 도움말" onSelect={() => run(() => setHelpOpen(true))}>
+            <KeyboardIcon aria-hidden />
+            단축키 보기
+            <CommandShortcut>
+              <Kbd>?</Kbd>
+            </CommandShortcut>
+          </CommandItem>
+          <CommandItem value="로그아웃" onSelect={() => run(signOut)}>
+            <SignOutIcon aria-hidden />
+            로그아웃
+          </CommandItem>
+        </CommandGroup>
+      </CommandList>
+    </Command>
   );
 }

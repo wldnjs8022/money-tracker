@@ -106,7 +106,9 @@ function ymd(y: number, m: number, d: number): string | null {
   return isValidDate(s) ? s : null;
 }
 
-const norm = (s: string) => s.toLowerCase().replace(/\s+/g, "");
+/** How the parser compares words: case and spaces don't count ("GS 25" is the same word as "gs25"). */
+export const wordKey = (s: string) => s.toLowerCase().replace(/\s+/g, "");
+const norm = wordKey;
 
 const KIND_ALIASES: Record<string, QEWalletKind> = {
   현금: "cash",
@@ -159,9 +161,43 @@ function matchCategory(words: string[], categories: QECategory[]): CategoryMatch
   return best;
 }
 
+function tokenize(input: string): string[] {
+  return input.replace(/->|=>|→/g, " → ").trim().split(/\s+/).filter(Boolean);
+}
+
+/**
+ * Whether an amount token reads as a price rather than part of a name. Store and product names often
+ * end in a small number ("이마트24", "GS 25", "아이폰 15"), so under 100 it needs a unit, 원 or ₩ ("껌 50원").
+ */
+export function plausibleAmount(token: string, value: number): boolean {
+  return value >= 100 || /[₩\\억만천백원]/.test(token);
+}
+
+/** Amounts typed as tokens of their own, in order. An amount glued to a word ("커피4500", "GS25") isn't one. */
+function standaloneAmounts(input: string): { value: number; plausible: boolean }[] {
+  return tokenize(input).flatMap((t) => {
+    const body = t.replace(/^[+-]/, "");
+    const value = parseAmount(body);
+    return value === null ? [] : [{ value, plausible: plausibleAmount(body, value) }];
+  });
+}
+
+/** How many amounts the line has as tokens of their own: "점심 12000 커피 4500" → 2, "커피 4500" → 1. */
+export function countAmountTokens(input: string): number {
+  return standaloneAmounts(input).length;
+}
+
+/**
+ * True when the line has exactly one amount of its own and it looks like a price, so it can be saved
+ * without a preview. "이마트 24" or "아이폰 15" is more likely a search than a 24원 expense.
+ */
+export function hasOneConfidentAmount(input: string): boolean {
+  const amounts = standaloneAmounts(input);
+  return amounts.length === 1 && amounts[0].plausible;
+}
+
 export function parseQuickEntry(input: string, ctx: QEContext): QEResult {
-  const text = input.replace(/->|=>|→/g, " → ").trim();
-  const tokens = text.split(/\s+/).filter(Boolean);
+  const tokens = tokenize(input);
 
   let date = ctx.today;
   let amount: number | null = null;
@@ -213,16 +249,21 @@ export function parseQuickEntry(input: string, ctx: QEContext): QEResult {
     memoWords.push(token);
   }
 
-  // "커피4500" — amount glued to a word. Only when no standalone amount was found.
+  // "커피4500" — amount glued to a word. Only when no standalone amount was found. Store names often
+  // end in digits, so a word that is itself a keyword, category or wallet name stays whole ("GS25"),
+  // and the number has to look like a price ("이마트24", "배스킨라빈스31" are names; "껌50원" isn't).
   if (amount === null) {
+    const known = new Set(
+      [...ctx.categories.flatMap((c) => [c.name, ...c.keywords]), ...ctx.wallets.map((w) => w.name)].map(norm),
+    );
     for (let i = memoWords.length - 1; i >= 0; i--) {
       const glued = /^(.*?[^\d,.+\-₩])(\d[\d,.]*(?:[억만천백][\d,.]*)*원?)$/.exec(memoWords[i]);
-      const parsed = glued ? parseAmount(glued[2]) : null;
-      if (glued && parsed !== null) {
-        amount = parsed;
-        memoWords[i] = glued[1];
-        break;
-      }
+      if (!glued || known.has(norm(memoWords[i]))) continue;
+      const parsed = parseAmount(glued[2]);
+      if (parsed === null || !plausibleAmount(glued[2], parsed)) continue;
+      amount = parsed;
+      memoWords[i] = glued[1];
+      break;
     }
   }
 

@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { parseAmount, parseDate, parseQuickEntry, type QEContext } from "./quick-entry";
+import {
+  countAmountTokens,
+  hasOneConfidentAmount,
+  parseAmount,
+  parseDate,
+  parseQuickEntry,
+  plausibleAmount,
+  type QEContext,
+} from "./quick-entry";
 
 const ctx: QEContext = {
   today: "2026-11-13",
@@ -15,7 +23,7 @@ const ctx: QEContext = {
     { id: "c-cafe", name: "카페·간식", kind: "expense", keywords: ["커피", "스벅", "라떼"] },
     { id: "c-delivery", name: "배달", kind: "expense", keywords: ["배민", "배달"] },
     { id: "c-taxi", name: "교통", kind: "expense", keywords: ["택시", "지하철"] },
-    { id: "c-life", name: "생활", kind: "expense", keywords: ["편의점", "마트"] },
+    { id: "c-life", name: "생활", kind: "expense", keywords: ["편의점", "마트", "GS25"] },
     { id: "c-sub", name: "구독", kind: "expense", keywords: ["넷플릭스"] },
     { id: "c-health", name: "건강", kind: "expense", keywords: ["약", "병원"] },
     { id: "c-house", name: "주거·통신", kind: "expense", keywords: ["관리비"] },
@@ -141,6 +149,23 @@ describe("parseQuickEntry", () => {
 
   it("splits an amount glued to a word", () => {
     expect(parseQuickEntry("커피4500", ctx)).toMatchObject({ amount: 4500, categoryId: "c-cafe", memo: "커피" });
+    expect(parseQuickEntry("껌50원", ctx)).toMatchObject({ amount: 50, memo: "껌" });
+    expect(parseQuickEntry("택시1.5만", ctx)).toMatchObject({ amount: 15000, categoryId: "c-taxi", memo: "택시" });
+  });
+
+  it("keeps store names that end in digits whole", () => {
+    // A keyword of its own stays one word and keeps its category.
+    expect(parseQuickEntry("GS25", ctx)).toMatchObject({ amount: null, categoryId: "c-life", memo: "GS25" });
+    expect(parseQuickEntry("gs25 음료", ctx)).toMatchObject({ amount: null, categoryId: "c-life", memo: "gs25 음료" });
+    // A number under 100 with no unit or 원 is part of the name.
+    expect(parseQuickEntry("이마트24", ctx)).toMatchObject({ amount: null, categoryId: "c-life", memo: "이마트24" });
+    expect(parseQuickEntry("배스킨라빈스31", ctx)).toMatchObject({ amount: null, memo: "배스킨라빈스31" });
+  });
+
+  it("still finds the amount next to a store name that ends in digits", () => {
+    expect(parseQuickEntry("GS25 3000", ctx)).toMatchObject({ amount: 3000, categoryId: "c-life", memo: "GS25" });
+    expect(parseQuickEntry("GS25 우유2500", ctx)).toMatchObject({ amount: 2500, memo: "GS25 우유" });
+    expect(parseQuickEntry("이마트24 1,200원", ctx)).toMatchObject({ amount: 1200, memo: "이마트24" });
   });
 
   it("understands Korean unit amounts", () => {
@@ -169,5 +194,57 @@ describe("parseQuickEntry", () => {
 
   it("returns a null amount when none is typed", () => {
     expect(parseQuickEntry("점심", ctx)).toMatchObject({ amount: null, categoryId: "c-food" });
+  });
+});
+
+describe("countAmountTokens", () => {
+  it("counts amounts typed as tokens of their own", () => {
+    expect(countAmountTokens("커피 4500")).toBe(1);
+    expect(countAmountTokens("+50000 당근 판매")).toBe(1);
+    expect(countAmountTokens("점심 12000 커피 4,500원")).toBe(2);
+    expect(countAmountTokens("통장->현금 5만")).toBe(1);
+  });
+
+  it("skips dates, tags and amounts glued to a word", () => {
+    expect(countAmountTokens("11/2 점심 9000")).toBe(1);
+    expect(countAmountTokens("어제 15일 #4500 택시")).toBe(0);
+    expect(countAmountTokens("커피4500")).toBe(0);
+    expect(countAmountTokens("GS25")).toBe(0);
+  });
+
+  it("still counts a small number on its own, so AI can flag a line with two", () => {
+    expect(countAmountTokens("이마트 24")).toBe(1);
+    expect(countAmountTokens("아이폰 15 1200000")).toBe(2);
+  });
+});
+
+describe("plausibleAmount", () => {
+  it.each([
+    ["4500", 4500, true],
+    ["100", 100, true],
+    ["50원", 50, true],
+    ["₩50", 50, true],
+    ["1.5만", 15000, true],
+    ["24", 24, false],
+    ["99", 99, false],
+  ])("%s → %s", (token, value, expected) => {
+    expect(plausibleAmount(token, value)).toBe(expected);
+  });
+});
+
+describe("hasOneConfidentAmount", () => {
+  it.each(["커피 4500", "껌 50원", "편의점 만원", "+50000 당근 판매", "통장 → 현금 5만"])("records %s", (input) => {
+    expect(hasOneConfidentAmount(input)).toBe(true);
+  });
+
+  it.each(["이마트 24", "GS 25", "아이폰 15", "배스킨라빈스 31", "체크카드 1", "-30"])("searches %s", (input) => {
+    expect(hasOneConfidentAmount(input)).toBe(false);
+  });
+
+  it("needs exactly one standalone amount", () => {
+    expect(hasOneConfidentAmount("점심 12000 커피 4500")).toBe(false);
+    expect(hasOneConfidentAmount("아이폰 15 1200000")).toBe(false);
+    expect(hasOneConfidentAmount("커피4500")).toBe(false);
+    expect(hasOneConfidentAmount("GS25")).toBe(false);
   });
 });

@@ -15,6 +15,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.8.0",
+    "@phosphor-icons/react": "^2.1.10",
     "better-auth": "^1.7.22",
     "class-variance-authority": "^0.7.1",
     "cmdk": "^1.1.1",

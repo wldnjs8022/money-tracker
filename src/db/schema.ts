@@ -12,6 +12,7 @@ import {
   timestamp,
   uuid,
 } from "drizzle-orm/pg-core";
+import { REVIEW_REASONS } from "../lib/review";
 import { user } from "./auth-schema";
 
 export * from "./auth-schema";
@@ -27,11 +28,15 @@ export * from "./auth-schema";
  *   sum of its transactions, so it can't drift out of sync.
  * - Credit card balances go negative as you spend (that's debt). Net worth is simply
  *   the sum of all wallet balances.
+ * - Records the app filed on its own (AI drafts, a place never seen before, no category)
+ *   wait in the review queue (확인할 것) until the user confirms them: pending means
+ *   review_reason is set and reviewed_at is null. See src/lib/review.ts.
  */
 
 export const walletKind = pgEnum("wallet_kind", ["cash", "bank", "card", "invest", "other"]);
 export const categoryKind = pgEnum("category_kind", ["income", "expense"]);
 export const txnType = pgEnum("txn_type", ["income", "expense", "transfer"]);
+export const reviewReason = pgEnum("review_reason", REVIEW_REASONS);
 
 const timestamps = {
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
@@ -105,15 +110,26 @@ export const transactions = pgTable(
       .array()
       .notNull()
       .default(sql`'{}'::text[]`),
+    /** Why the record went to the review queue. Null = it never needed a look. Kept after review. */
+    reviewReason: reviewReason(),
+    /** When the user confirmed it. Pending = reviewReason set and reviewedAt null. */
+    reviewedAt: timestamp({ withTimezone: true }),
+    /** The original quick-entry line, if the record came from one. */
+    sourceText: text().notNull().default(""),
     ...timestamps,
   },
   (t) => [
     index().on(t.userId, t.date),
     index().on(t.walletId),
     index().on(t.toWalletId),
+    // The review queue and its badge count only ever read pending rows.
+    index("transactions_review_pending_idx")
+      .on(t.userId, t.date)
+      .where(sql`${t.reviewReason} is not null and ${t.reviewedAt} is null`),
     check("transactions_amount_positive", sql`${t.amount} > 0`),
     check("transactions_transfer_has_target", sql`(${t.type} = 'transfer') = (${t.toWalletId} is not null)`),
     check("transactions_transfer_distinct", sql`${t.toWalletId} is null or ${t.toWalletId} <> ${t.walletId}`),
+    check("transactions_reviewed_has_reason", sql`${t.reviewedAt} is null or ${t.reviewReason} is not null`),
   ],
 );
 
